@@ -1,0 +1,30 @@
+INVOICE
+
+TechSolutions Ltd.
+456 Innovation Drive
+San Francisco, CA 94105
+
+Invoice Number: INV-2024-005678
+Date: 2024-02-20
+Due Date: 2024-03-20
+
+Bill To:
+Global Enterprises Inc.
+789 Corporate Ave
+New York, NY 10001
+
+Description                     Quantity   Unit Price    Total
+================================================================
+Web Development Services            80      $200.00    $16,000.00
+UI/UX Design                         5      $500.00     $2,500.00
+Mobile App Development              100      $150.00    $15,000.00
+Testing & QA                         20      $100.00     $2,000.00
+
+Subtotal:                                               $35,500.00
+Discount (10%):                                         ($3,550.00)
+Subtotal after discount:                               $31,950.00
+Tax (8%):                                               $2,556.00
+TOTAL DUE:                                             $34,506.00
+
+Payment Terms: Net 45
+Notes: Payment due within 45 days. 2% discount if paid within 10 days.

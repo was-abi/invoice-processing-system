@@ -97,4 +97,4 @@ if __name__ == "__main__":
     
     # Show details of first invoice
     print("\n" + "="*50)
-    get_invoice_details(1)
+    get_invoice_details(2)

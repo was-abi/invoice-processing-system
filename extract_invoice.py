@@ -168,7 +168,7 @@ def main():
     """Main function"""
     
     print("📖 Reading sample invoice...")
-    with open('sample_invoice.txt', 'r') as f:
+    with open('sample_invoice2.txt', 'r') as f:
         invoice_text = f.read()
     
     # Extract data
