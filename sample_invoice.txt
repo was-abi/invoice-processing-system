@@ -1,0 +1,25 @@
+INVOICE
+Company XYZ Inc.
+123 Business St
+New York, NY 10001
+
+Invoice Number: INV-2024-001234
+Date: 2024-01-15
+Due Date: 2024-02-15
+
+Bill To:
+Acme Corp
+456 Main Street
+Chicago, IL 60601
+
+Description          Quantity   Unit Price    Total
+--------------------------------------------------
+Consulting Services     40      $150.00     $6,000.00
+Software License         1    $2,500.00     $2,500.00
+Support & Maintenance    1    $1,000.00     $1,000.00
+
+Subtotal:                                   $9,500.00
+Tax (8%):                                     $760.00
+TOTAL DUE:                                 $10,260.00
+
+Payment Terms: Net 30
