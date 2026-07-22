@@ -162,8 +162,8 @@ MIT
 
 ## Author
 
-Your Name
+Abhishek Gajul
 
 ## Contact
 
-[Your GitHub Profile](https://github.com/was-abi)
+[GitHub Profile](https://github.com/was-abi)
