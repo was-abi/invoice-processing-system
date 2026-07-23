@@ -1,0 +1,29 @@
+INVOICE
+
+ABC Marketing Solutions
+789 Madison Avenue
+New York, NY 10016
+Phone: (555) 123-4567
+
+Invoice Number: INV-2024-008901
+Date: 2024-03-10
+Due Date: 2024-04-10
+
+Bill To:
+StartUp Tech Inc.
+321 Innovation Blvd
+San Jose, CA 95110
+
+Description                      Quantity   Unit Price    Total
+================================================================
+Social Media Management               1      $2,000.00  $2,000.00
+Content Creation (Blog Posts)        4        $500.00   $2,000.00
+Email Marketing Campaign              1      $1,500.00  $1,500.00
+Analytics & Reporting                1        $750.00     $750.00
+
+Subtotal:                                                $6,250.00
+Tax (10%):                                                $625.00
+TOTAL DUE:                                              $6,875.00
+
+Payment Terms: Net 30
+Notes: Please pay by April 10, 2024

@@ -1,0 +1,30 @@
+INVOICE
+
+CloudNine Consulting Group
+1234 Tech Park Drive
+Seattle, WA 98101
+
+Invoice Number: INV-2024-015678
+Date: 2024-03-05
+Due Date: 2024-04-05
+
+Bill To:
+Digital Ventures LLC
+2000 Market Street
+San Francisco, CA 94103
+
+Description                            Quantity   Unit Price    Total
+====================================================================
+Cloud Architecture Consulting              40      $200.00   $8,000.00
+DevOps Implementation                      60      $180.00  $10,800.00
+Security Audit & Hardening                30      $250.00   $7,500.00
+Performance Optimization                  20      $220.00   $4,400.00
+24/7 Support Package (1 month)             1      $5,000.00  $5,000.00
+
+Subtotal:                                                   $35,700.00
+Service Tax (6%):                                          $2,142.00
+TOTAL DUE:                                                $37,842.00
+
+Payment Terms: Net 45
+Contact: support@cloudnine.com
+Phone: (555) 987-6543

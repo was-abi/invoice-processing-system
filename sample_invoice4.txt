@@ -1,0 +1,33 @@
+INVOICE
+
+Enterprise Solutions Corp
+500 Park Avenue
+Chicago, IL 60601
+Email: billing@enterprise.com
+
+Invoice Number: INV-2024-012345
+Date: 2024-02-28
+Due Date: 2024-03-31
+
+Bill To:
+Global Manufacturing Ltd
+1000 Industrial Park
+Detroit, MI 48201
+
+Description                          Quantity   Unit Price    Total
+===================================================================
+ERP System Implementation                1     $50,000.00  $50,000.00
+Database Migration Services             80       $250.00  $20,000.00
+Staff Training (5 days)                  5     $2,000.00  $10,000.00
+Technical Support (12 months)            1     $15,000.00 $15,000.00
+Custom Integration Development          40       $300.00  $12,000.00
+
+Subtotal:                                                $107,000.00
+Volume Discount (15%):                                  ($16,050.00)
+Subtotal after discount:                                $90,950.00
+Tax (7%):                                               ($6,366.50)
+TOTAL DUE:                                             $84,583.50
+
+Payment Terms: Net 60
+Bank Details: Chase Bank, Account: 123456789
+Notes: Invoice must be paid by March 31, 2024
