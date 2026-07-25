@@ -39,6 +39,8 @@ class Settings:
             "password": self.DATABASE_PASSWORD,
             "port": self.DATABASE_PORT
         }
+    LOKI_URL = os.getenv("LOKI_URL", "http://localhost:3100")
+    LOKI_ENABLED = os.getenv("LOKI_ENABLED", "False").lower() == "true"
 
 # Create global settings instance
 settings = Settings()

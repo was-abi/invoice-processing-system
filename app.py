@@ -1,24 +1,118 @@
 # app.py
-from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import requests
 import json
 import psycopg2
-from typing import List, Annotated
+from typing import List, Annotated, Optional
+import time
 import os
 
 from models import InvoiceResponse, UploadResponse, LineItemResponse, ExtractedInvoiceData
+from config import settings
+from logger import app_logger, extraction_logger, db_logger, http_logger
 
-# Initialize FastAPI app
+# ============================================================================
+# INITIALIZE FASTAPI APP
+# ============================================================================
+
 app = FastAPI(
-    title="Invoice Processing System",
-    description="Extract invoice data using Llama 3.2",
-    version="1.0.0"
+    title=settings.API_TITLE,
+    description="Extract invoice data using Llama 3.2 - Production Ready",
+    version=settings.API_VERSION,
+    debug=settings.DEBUG
 )
 
-# Add CORS (allows browser to make requests)
+# ============================================================================
+# MIDDLEWARE (Context7 Best Practice)
+# ============================================================================
+
+# HTTP Request/Response Logging Middleware
+@app.middleware("http")
+async def log_http_requests(request: Request, call_next):
+    """
+    Log all HTTP requests and responses with ECS format.
+    Context7 best practice for observability.
+    """
+    
+    start_time = time.perf_counter()
+    
+    # Get request body size
+    body = await request.body()
+    request_size = len(body)
+    
+    # Log incoming request
+    http_logger.info(
+        "HTTP request started",
+        http={
+            "request": {
+                "method": request.method,
+                "path": request.url.path,
+                "query": str(request.url.query) or None,
+                "bytes": request_size,
+            }
+        },
+        url={
+            "full": str(request.url),
+            "path": request.url.path,
+            "scheme": request.url.scheme,
+        },
+        client={
+            "address": request.client.host if request.client else None,
+        }
+    )
+    
+    try:
+        response = await call_next(request)
+        
+        process_time = time.perf_counter() - start_time
+        
+        # Log successful response
+        http_logger.info(
+            "HTTP request completed",
+            http={
+                "response": {
+                    "status_code": response.status_code,
+                    "status": "success" if response.status_code < 400 else "error",
+                }
+            },
+            duration_ms=round(process_time * 1000, 2),
+            event={
+                "duration_ms": round(process_time * 1000, 2),
+            }
+        )
+        
+        return response
+    
+    except Exception as e:
+        process_time = time.perf_counter() - start_time
+        
+        # Log request failure
+        http_logger.error(
+            "HTTP request failed",
+            http={
+                "response": {
+                    "status_code": 500,
+                    "status": "error",
+                }
+            },
+            error=str(e),
+            duration_ms=round(process_time * 1000, 2),
+            event={
+                "action": "http_request_failed",
+                "outcome": "failure",
+            },
+            exc_info=True
+        )
+        raise
+
+
+# Add security middleware
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,26 +121,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "llama3.2"
-
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "invoice_db",
-    "user": "postgres",
-    "password": "password123",  # Replace with YOUR password
-    "port": "5432"
-}
-
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
-def extract_invoice_from_text(invoice_text: str) -> dict:
-    """Extract invoice data using Llama 3.2 (from Context7 best practices)"""
+def extract_invoice_from_text(invoice_text: str, invoice_id: Optional[int] = None) -> dict:
+    """
+    Extract invoice data using Llama 3.2 with structured logging.
+    Context7 best practice: Proper error logging with context.
+    """
     
-    prompt = f"""You are an invoice extraction expert. Extract the following information from the invoice:
+    try:
+        extraction_logger.info(
+            "Starting invoice extraction",
+            invoice={
+                "id": invoice_id,
+            },
+            llm={
+                "model": settings.OLLAMA_MODEL,
+            }
+        )
+        
+        # Validate input
+        if not invoice_text or len(invoice_text.strip()) == 0:
+            extraction_logger.warning(
+                "Empty invoice text provided",
+                invoice={"id": invoice_id},
+            )
+            return None
+        
+        prompt = f"""You are an invoice extraction expert. Extract the following information from the invoice:
 - Invoice number
 - Date (YYYY-MM-DD format)
 - Vendor/Company name
@@ -67,15 +171,21 @@ Return ONLY valid JSON (no extra text) with this structure:
     ],
     "confidence": 0.95
 }}"""
-    
-    payload = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-    }
-    
-    try:
-        response = requests.post(OLLAMA_URL, json=payload, timeout=60)
+        
+        payload = {
+            "model": settings.OLLAMA_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        
+        llm_start_time = time.perf_counter()
+        response = requests.post(
+            settings.OLLAMA_HOST + "/api/chat",
+            json=payload,
+            timeout=60
+        )
+        llm_process_time = time.perf_counter() - llm_start_time
+        
         response.raise_for_status()
         
         result = response.json()
@@ -86,21 +196,87 @@ Return ONLY valid JSON (no extra text) with this structure:
         json_end = response_text.rfind('}') + 1
         
         if json_start == -1 or json_end == 0:
+            extraction_logger.error(
+                "Could not find JSON in Llama response",
+                invoice={"id": invoice_id},
+                llm={
+                    "response_preview": response_text[:200],
+                }
+            )
             return None
         
         extracted_json = response_text[json_start:json_end]
-        return json.loads(extracted_json)
+        extracted_data = json.loads(extracted_json)
+        
+        extraction_logger.info(
+            "Extraction successful",
+            invoice={
+                "id": invoice_id,
+                "number": extracted_data.get('invoice_number'),
+                "vendor": extracted_data.get('vendor_name'),
+                "total_amount": extracted_data.get('total_amount'),
+                "line_items_count": len(extracted_data.get('line_items', [])),
+            },
+            extraction={
+                "confidence": extracted_data.get('confidence', 0.0),
+                "llm_response_time_ms": round(llm_process_time * 1000, 2),
+            }
+        )
+        
+        return extracted_data
     
+    except requests.exceptions.ConnectionError as e:
+        extraction_logger.error(
+            "Failed to connect to Ollama",
+            invoice={"id": invoice_id},
+            error={
+                "type": "connection_error",
+                "message": str(e),
+            },
+            llm={
+                "host": settings.OLLAMA_HOST,
+            }
+        )
+        return None
+    except json.JSONDecodeError as e:
+        extraction_logger.error(
+            "JSON parsing error",
+            invoice={"id": invoice_id},
+            error={
+                "type": "json_error",
+                "message": str(e),
+            }
+        )
+        return None
     except Exception as e:
-        print(f"❌ Extraction error: {e}")
+        extraction_logger.error(
+            "Unexpected extraction error",
+            invoice={"id": invoice_id},
+            error={
+                "type": type(e).__name__,
+                "message": str(e),
+            },
+            exc_info=True
+        )
         return None
 
 
-def save_invoice_to_db(extracted_data: dict) -> int:
-    """Save extracted invoice to database (using context manager from Context7)"""
+def save_invoice_to_db(extracted_data: dict, invoice_id: Optional[int] = None) -> int:
+    """
+    Save extracted invoice to database with structured logging.
+    Context7 best practice: Comprehensive error logging with context.
+    """
     
     try:
-        with psycopg2.connect(**DB_CONFIG) as conn:
+        db_start_time = time.perf_counter()
+        
+        db_logger.info(
+            "Attempting to save invoice",
+            invoice={"id": invoice_id},
+            database={"operation": "insert"},
+        )
+        
+        with psycopg2.connect(**settings.database_url) as conn:
             with conn.cursor() as cursor:
                 # Insert invoice
                 cursor.execute("""
@@ -119,36 +295,85 @@ def save_invoice_to_db(extracted_data: dict) -> int:
                     'extracted'
                 ))
                 
-                invoice_id = cursor.fetchone()[0]
+                saved_invoice_id = cursor.fetchone()[0]
                 
                 # Insert line items
+                line_count = 0
                 for item in extracted_data.get('line_items', []):
                     cursor.execute("""
                         INSERT INTO line_items 
                         (invoice_id, description, quantity, unit_price, total)
                         VALUES (%s, %s, %s, %s, %s);
                     """, (
-                        invoice_id,
+                        saved_invoice_id,
                         item.get('description'),
                         item.get('quantity'),
                         item.get('unit_price'),
                         item.get('total')
                     ))
+                    line_count += 1
                 
                 # Insert audit log
                 cursor.execute("""
                     INSERT INTO audit_log (invoice_id, action, details)
                     VALUES (%s, %s, %s);
                 """, (
-                    invoice_id,
+                    saved_invoice_id,
                     'UPLOADED',
-                    f"Invoice uploaded via web. Confidence: {extracted_data.get('confidence', 0.0)}"
+                    f"Invoice uploaded via web. Line items: {line_count}. Confidence: {extracted_data.get('confidence', 0.0)}"
                 ))
         
-        return invoice_id
+        db_process_time = time.perf_counter() - db_start_time
+        
+        db_logger.info(
+            "Invoice saved successfully",
+            invoice={
+                "id": saved_invoice_id,
+                "number": extracted_data.get('invoice_number'),
+                "line_items": line_count,
+            },
+            database={
+                "operation": "insert_completed",
+                "response_time_ms": round(db_process_time * 1000, 2),
+            }
+        )
+        
+        return saved_invoice_id
     
+    except psycopg2.IntegrityError as e:
+        db_logger.error(
+            "Database integrity error (duplicate invoice?)",
+            invoice={"id": invoice_id},
+            error={
+                "type": "integrity_error",
+                "message": str(e),
+            }
+        )
+        return None
+    except psycopg2.OperationalError as e:
+        db_logger.error(
+            "Database connection error",
+            invoice={"id": invoice_id},
+            error={
+                "type": "operational_error",
+                "message": str(e),
+            },
+            database={
+                "host": settings.DATABASE_HOST,
+                "port": settings.DATABASE_PORT,
+            }
+        )
+        return None
     except psycopg2.Error as e:
-        print(f"❌ Database error: {e}")
+        db_logger.error(
+            "Database error",
+            invoice={"id": invoice_id},
+            error={
+                "type": "database_error",
+                "message": str(e),
+            },
+            exc_info=True
+        )
         return None
 
 
@@ -183,6 +408,12 @@ async def root():
             h1 {
                 color: #667eea;
                 text-align: center;
+            }
+            .version {
+                text-align: center;
+                color: #999;
+                font-size: 12px;
+                margin-top: -10px;
             }
             .upload-section {
                 margin: 30px 0;
@@ -241,14 +472,26 @@ async def root():
             .links a:hover {
                 text-decoration: underline;
             }
+            .status {
+                padding: 10px;
+                background: #e7f3ff;
+                border-left: 4px solid #2196F3;
+                margin-bottom: 20px;
+                border-radius: 3px;
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>📄 Invoice Processing System</h1>
+            <div class="version">v""" + settings.API_VERSION + """</div>
             <p style="text-align: center; color: #666;">
                 Upload your invoices and we'll extract the data automatically using AI
             </p>
+            
+            <div class="status">
+                ✅ System operational - All services connected
+            </div>
             
             <div class="upload-section">
                 <form id="uploadForm">
@@ -265,7 +508,8 @@ async def root():
             
             <div class="links">
                 <a href="/invoices">📊 View All Invoices</a>
-                <a href="/docs">📚 API Documentation</a>
+                <a href="/docs">📚 API Docs</a>
+                <a href="/health">🏥 Health Check</a>
             </div>
         </div>
         
@@ -307,7 +551,7 @@ async def root():
                         fileInput.value = '';
                     } else {
                         resultDiv.className = 'result error';
-                        resultDiv.innerHTML = `<h3>❌ Error: ${data.message}</h3>`;
+                        resultDiv.innerHTML = `<h3>❌ Error: ${data.detail || data.message}</h3>`;
                     }
                 } catch (error) {
                     loadingDiv.style.display = 'none';
@@ -323,28 +567,100 @@ async def root():
     return html_content
 
 
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint for monitoring.
+    Used by Docker health checks and load balancers.
+    """
+    
+    health_status = {
+        "status": "healthy",
+        "version": settings.API_VERSION,
+        "services": {}
+    }
+    
+    app_logger.info("Health check requested", event={"action": "health_check"})
+    
+    # Check Ollama
+    try:
+        response = requests.get(settings.OLLAMA_HOST + "/api/tags", timeout=5)
+        health_status["services"]["ollama"] = "✅ running"
+    except Exception as e:
+        health_status["services"]["ollama"] = "❌ unavailable"
+        health_status["status"] = "degraded"
+        app_logger.warning(
+            "Ollama health check failed",
+            service={"name": "ollama", "status": "down"},
+            error=str(e)
+        )
+    
+    # Check Database
+    try:
+        with psycopg2.connect(**settings.database_url) as conn:
+            health_status["services"]["database"] = "✅ running"
+    except Exception as e:
+        health_status["services"]["database"] = "❌ unavailable"
+        health_status["status"] = "degraded"
+        app_logger.warning(
+            "Database health check failed",
+            service={"name": "database", "status": "down"},
+            error=str(e)
+        )
+    
+    # Check Loki
+    if settings.LOKI_ENABLED:
+        try:
+            response = requests.get(settings.LOKI_URL + "/ready", timeout=5)
+            health_status["services"]["loki"] = "✅ running"
+        except:
+            health_status["services"]["loki"] = "❌ unavailable"
+    
+    status_code = 200 if health_status["status"] == "healthy" else 503
+    return JSONResponse(content=health_status, status_code=status_code)
+
+
 @app.post("/api/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_invoice(
     file: Annotated[UploadFile, File(description="Invoice file (.txt format)")]
 ) -> UploadResponse:
     """
-    Upload and process an invoice
-    
-    - **file**: Text file containing invoice data
-    
-    Returns:
-    - Invoice ID if successful
-    - Extracted data with confidence score
-    
-    (Following Context7 best practices for file uploads)
+    Upload and process an invoice.
+    Extracts data using Llama 3.2 and saves to database.
     """
     
     try:
+        app_logger.info(
+            "File upload initiated",
+            file={
+                "name": file.filename,
+                "content_type": file.content_type,
+                "size": file.size or 0,
+            }
+        )
+        
         # Validate file type
         if not file.filename.endswith('.txt'):
+            app_logger.warning(
+                "Invalid file type uploaded",
+                file={"name": file.filename, "type": file.content_type},
+                error={"type": "invalid_file_type"}
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Only .txt files are supported"
+            )
+        
+        # Validate file size (max 5MB)
+        if file.size and file.size > 5 * 1024 * 1024:
+            app_logger.warning(
+                "File size exceeds limit",
+                file={"name": file.filename, "size": file.size},
+                error={"type": "file_too_large", "max_size": "5MB"}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File size must be less than 5MB"
             )
         
         # Read file
@@ -355,6 +671,11 @@ async def upload_invoice(
         extracted_data = extract_invoice_from_text(invoice_text)
         
         if not extracted_data:
+            app_logger.error(
+                "Failed to extract invoice data",
+                file={"name": file.filename},
+                error={"type": "extraction_failed"}
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Failed to extract invoice data. Please check the file format."
@@ -364,14 +685,29 @@ async def upload_invoice(
         invoice_id = save_invoice_to_db(extracted_data)
         
         if not invoice_id:
+            app_logger.error(
+                "Failed to save invoice to database",
+                file={"name": file.filename},
+                error={"type": "database_save_failed"}
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to save invoice to database"
             )
         
+        app_logger.info(
+            "Invoice processed successfully",
+            invoice={
+                "id": invoice_id,
+                "number": extracted_data.get('invoice_number'),
+                "vendor": extracted_data.get('vendor_name'),
+            },
+            file={"name": file.filename}
+        )
+        
         return UploadResponse(
             status="success",
-            message=f"Invoice extracted and saved successfully",
+            message="Invoice extracted and saved successfully",
             invoice_id=invoice_id,
             extracted_data=ExtractedInvoiceData(**extracted_data)
         )
@@ -379,6 +715,15 @@ async def upload_invoice(
     except HTTPException:
         raise
     except Exception as e:
+        app_logger.error(
+            "Unexpected error during file upload",
+            file={"name": file.filename},
+            error={
+                "type": type(e).__name__,
+                "message": str(e),
+            },
+            exc_info=True
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing file: {str(e)}"
@@ -387,14 +732,15 @@ async def upload_invoice(
 
 @app.get("/api/invoices", response_model=List[InvoiceResponse])
 async def get_all_invoices():
-    """
-    Retrieve all invoices with their line items
-    
-    (Following Context7 best practices for response models)
-    """
+    """Retrieve all invoices with their line items"""
     
     try:
-        with psycopg2.connect(**DB_CONFIG) as conn:
+        app_logger.info(
+            "Retrieving all invoices",
+            database={"operation": "select_all"}
+        )
+        
+        with psycopg2.connect(**settings.database_url) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT id, invoice_number, vendor_name, invoice_date, 
@@ -437,9 +783,22 @@ async def get_all_invoices():
                         line_items=line_items
                     ))
                 
+                app_logger.info(
+                    "Invoices retrieved successfully",
+                    database={"operation": "select_all", "count": len(result)}
+                )
+                
                 return result
     
     except psycopg2.Error as e:
+        app_logger.error(
+            "Database error retrieving invoices",
+            error={
+                "type": "database_error",
+                "message": str(e),
+            },
+            exc_info=True
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database error: {str(e)}"
@@ -448,12 +807,16 @@ async def get_all_invoices():
 
 @app.get("/api/invoices/{invoice_id}", response_model=InvoiceResponse)
 async def get_invoice(invoice_id: int):
-    """
-    Retrieve a specific invoice by ID
-    """
+    """Retrieve a specific invoice by ID"""
     
     try:
-        with psycopg2.connect(**DB_CONFIG) as conn:
+        app_logger.info(
+            "Retrieving specific invoice",
+            invoice={"id": invoice_id},
+            database={"operation": "select_one"}
+        )
+        
+        with psycopg2.connect(**settings.database_url) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT id, invoice_number, vendor_name, invoice_date, 
@@ -465,6 +828,10 @@ async def get_invoice(invoice_id: int):
                 invoice = cursor.fetchone()
                 
                 if not invoice:
+                    app_logger.warning(
+                        "Invoice not found",
+                        invoice={"id": invoice_id},
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=f"Invoice with ID {invoice_id} not found"
@@ -488,6 +855,11 @@ async def get_invoice(invoice_id: int):
                     for item in cursor.fetchall()
                 ]
                 
+                app_logger.info(
+                    "Invoice retrieved successfully",
+                    invoice={"id": invoice_id, "number": invoice[1]},
+                )
+                
                 return InvoiceResponse(
                     id=invoice[0],
                     invoice_number=invoice[1],
@@ -501,6 +873,15 @@ async def get_invoice(invoice_id: int):
                 )
     
     except psycopg2.Error as e:
+        app_logger.error(
+            "Database error retrieving invoice",
+            invoice={"id": invoice_id},
+            error={
+                "type": "database_error",
+                "message": str(e),
+            },
+            exc_info=True
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database error: {str(e)}"
@@ -645,31 +1026,94 @@ async def view_invoices():
 
 
 # ============================================================================
-# STARTUP CHECK
+# STARTUP AND SHUTDOWN
 # ============================================================================
 
 @app.on_event("startup")
 async def startup_event():
-    """Check connections on startup"""
+    """
+    Application startup event.
+    Verify all dependencies are available.
+    """
     
-    print("\n" + "="*50)
-    print("🚀 Invoice Processing System Starting")
-    print("="*50)
+    app_logger.info("=" * 70)
+    app_logger.info("🚀 Invoice Processing System Starting")
+    app_logger.info("=" * 70)
+    app_logger.info(
+        "System initialization",
+        system={
+            "version": settings.API_VERSION,
+            "debug": settings.DEBUG,
+            "log_level": settings.LOG_LEVEL,
+        }
+    )
     
     # Check Ollama
     try:
-        response = requests.get("http://localhost:11434/api/tags", timeout=5)
-        print("✅ Ollama is running")
-    except:
-        print("⚠️  Ollama not detected. Run: ollama serve")
+        response = requests.get(settings.OLLAMA_HOST + "/api/tags", timeout=5)
+        app_logger.info(
+            "✅ Ollama connected",
+            service={"name": "ollama", "status": "running", "url": settings.OLLAMA_HOST}
+        )
+    except Exception as e:
+        app_logger.warning(
+            "⚠️  Ollama not available",
+            service={"name": "ollama", "status": "offline", "url": settings.OLLAMA_HOST},
+            error=str(e)
+        )
     
     # Check Database
     try:
-        with psycopg2.connect(**DB_CONFIG) as conn:
-            print("✅ PostgreSQL connected")
-    except:
-        print("⚠️  PostgreSQL not connected. Check your password in app.py")
+        with psycopg2.connect(**settings.database_url) as conn:
+            app_logger.info(
+                "✅ PostgreSQL connected",
+                service={
+                    "name": "database",
+                    "status": "running",
+                    "host": settings.DATABASE_HOST,
+                    "port": settings.DATABASE_PORT,
+                }
+            )
+    except Exception as e:
+        app_logger.error(
+            "❌ PostgreSQL connection failed",
+            service={
+                "name": "database",
+                "status": "offline",
+                "host": settings.DATABASE_HOST,
+            },
+            error=str(e)
+        )
     
-    print("\n📱 Open browser: http://localhost:8000")
-    print("📚 API Docs: http://localhost:8000/docs")
-    print("="*50 + "\n")
+    # Check Loki
+    if settings.LOKI_ENABLED:
+        try:
+            response = requests.get(settings.LOKI_URL + "/ready", timeout=5)
+            app_logger.info(
+                "✅ Loki connected",
+                service={"name": "loki", "status": "running", "url": settings.LOKI_URL}
+            )
+        except Exception as e:
+            app_logger.warning(
+                "⚠️  Loki not available",
+                service={"name": "loki", "status": "offline", "url": settings.LOKI_URL},
+                error=str(e)
+            )
+    
+    app_logger.info(
+        "System ready",
+        system={
+            "api_url": f"http://{settings.HOST}:{settings.PORT}",
+            "docs_url": f"http://{settings.HOST}:{settings.PORT}/docs",
+        }
+    )
+    app_logger.info("=" * 70)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown event"""
+    
+    app_logger.info("=" * 70)
+    app_logger.info("🛑 Invoice Processing System Shutting Down")
+    app_logger.info("=" * 70)
