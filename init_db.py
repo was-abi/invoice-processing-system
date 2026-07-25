@@ -2,14 +2,10 @@
 import psycopg2
 from psycopg2 import sql
 
-# Database connection details
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "invoice_db",
-    "user": "postgres",
-    "password": "password123",
-    "port": "5432"
-}
+from config import settings
+
+# Database connection details come from environment via config.py
+DB_CONFIG = settings.database_url
 
 def create_tables():
     """Create tables for invoice processing using context manager best practices"""

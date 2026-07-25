@@ -1,8 +1,9 @@
 python-dotenv
 requests
-psycopg2
+psycopg2-binary
 fastapi 
 uvicorn 
 python-multipart
 structlog
-ecs_logging
+ecs-logging
+pydantic

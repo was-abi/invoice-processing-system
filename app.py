@@ -30,84 +30,45 @@ app = FastAPI(
 # ============================================================================
 
 # HTTP Request/Response Logging Middleware
+# In app.py - FIXED HTTP MIDDLEWARE
+
 @app.middleware("http")
 async def log_http_requests(request: Request, call_next):
-    """
-    Log all HTTP requests and responses with ECS format.
-    Context7 best practice for observability.
-    """
-    
+    """Log HTTP requests/responses"""
+
     start_time = time.perf_counter()
-    
-    # Get request body size
     body = await request.body()
     request_size = len(body)
-    
-    # Log incoming request
+
     http_logger.info(
-        "HTTP request started",
-        http={
-            "request": {
-                "method": request.method,
-                "path": request.url.path,
-                "query": str(request.url.query) or None,
-                "bytes": request_size,
-            }
-        },
-        url={
-            "full": str(request.url),
-            "path": request.url.path,
-            "scheme": request.url.scheme,
-        },
-        client={
-            "address": request.client.host if request.client else None,
-        }
+        "http_request_started",
+        method=request.method,
+        path=request.url.path,
+        request_size=request_size,
     )
-    
+
     try:
         response = await call_next(request)
-        
         process_time = time.perf_counter() - start_time
-        
-        # Log successful response
+
         http_logger.info(
-            "HTTP request completed",
-            http={
-                "response": {
-                    "status_code": response.status_code,
-                    "status": "success" if response.status_code < 400 else "error",
-                }
-            },
+            "http_request_completed",
+            status_code=response.status_code,
             duration_ms=round(process_time * 1000, 2),
-            event={
-                "duration_ms": round(process_time * 1000, 2),
-            }
         )
-        
+
         return response
-    
+
     except Exception as e:
         process_time = time.perf_counter() - start_time
-        
-        # Log request failure
+
         http_logger.error(
-            "HTTP request failed",
-            http={
-                "response": {
-                    "status_code": 500,
-                    "status": "error",
-                }
-            },
+            "http_request_failed",
             error=str(e),
             duration_ms=round(process_time * 1000, 2),
-            event={
-                "action": "http_request_failed",
-                "outcome": "failure",
-            },
             exc_info=True
         )
         raise
-
 
 # Add security middleware
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
@@ -569,82 +530,55 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint for monitoring.
-    Used by Docker health checks and load balancers.
-    """
-    
+    """Health check endpoint"""
+
     health_status = {
         "status": "healthy",
         "version": settings.API_VERSION,
         "services": {}
     }
-    
-    app_logger.info("Health check requested", event={"action": "health_check"})
+
+    app_logger.info("health_check_requested")
     
     # Check Ollama
     try:
         response = requests.get(settings.OLLAMA_HOST + "/api/tags", timeout=5)
         health_status["services"]["ollama"] = "✅ running"
-    except Exception as e:
+    except:
         health_status["services"]["ollama"] = "❌ unavailable"
         health_status["status"] = "degraded"
-        app_logger.warning(
-            "Ollama health check failed",
-            service={"name": "ollama", "status": "down"},
-            error=str(e)
-        )
     
     # Check Database
     try:
         with psycopg2.connect(**settings.database_url) as conn:
             health_status["services"]["database"] = "✅ running"
-    except Exception as e:
+    except:
         health_status["services"]["database"] = "❌ unavailable"
         health_status["status"] = "degraded"
-        app_logger.warning(
-            "Database health check failed",
-            service={"name": "database", "status": "down"},
-            error=str(e)
-        )
-    
-    # Check Loki
-    if settings.LOKI_ENABLED:
-        try:
-            response = requests.get(settings.LOKI_URL + "/ready", timeout=5)
-            health_status["services"]["loki"] = "✅ running"
-        except:
-            health_status["services"]["loki"] = "❌ unavailable"
     
     status_code = 200 if health_status["status"] == "healthy" else 503
     return JSONResponse(content=health_status, status_code=status_code)
-
 
 @app.post("/api/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_invoice(
     file: Annotated[UploadFile, File(description="Invoice file (.txt format)")]
 ) -> UploadResponse:
-    """
-    Upload and process an invoice.
-    Extracts data using Llama 3.2 and saves to database.
-    """
+    """Upload and process an invoice"""
     
     try:
         app_logger.info(
-            "File upload initiated",
-            file={
-                "name": file.filename,
-                "content_type": file.content_type,
-                "size": file.size or 0,
-            }
+            "file_upload_initiated",
+            filename=file.filename,
+            content_type=file.content_type,
+            size=file.size or 0,
         )
         
         # Validate file type
         if not file.filename.endswith('.txt'):
             app_logger.warning(
-                "Invalid file type uploaded",
-                file={"name": file.filename, "type": file.content_type},
-                error={"type": "invalid_file_type"}
+                "invalid_file_type",
+                filename=file.filename,
+                content_type=file.content_type,
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -654,9 +588,10 @@ async def upload_invoice(
         # Validate file size (max 5MB)
         if file.size and file.size > 5 * 1024 * 1024:
             app_logger.warning(
-                "File size exceeds limit",
-                file={"name": file.filename, "size": file.size},
-                error={"type": "file_too_large", "max_size": "5MB"}
+                "file_too_large",
+                filename=file.filename,
+                size=file.size,
+                max_size="5MB"
             )
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -672,9 +607,8 @@ async def upload_invoice(
         
         if not extracted_data:
             app_logger.error(
-                "Failed to extract invoice data",
-                file={"name": file.filename},
-                error={"type": "extraction_failed"}
+                "extraction_failed",
+                filename=file.filename,
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -686,9 +620,8 @@ async def upload_invoice(
         
         if not invoice_id:
             app_logger.error(
-                "Failed to save invoice to database",
-                file={"name": file.filename},
-                error={"type": "database_save_failed"}
+                "database_save_failed",
+                filename=file.filename,
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -696,13 +629,11 @@ async def upload_invoice(
             )
         
         app_logger.info(
-            "Invoice processed successfully",
-            invoice={
-                "id": invoice_id,
-                "number": extracted_data.get('invoice_number'),
-                "vendor": extracted_data.get('vendor_name'),
-            },
-            file={"name": file.filename}
+            "invoice_processed_successfully",
+            invoice_id=invoice_id,
+            invoice_number=extracted_data.get('invoice_number'),
+            vendor=extracted_data.get('vendor_name'),
+            filename=file.filename
         )
         
         return UploadResponse(
@@ -716,19 +647,15 @@ async def upload_invoice(
         raise
     except Exception as e:
         app_logger.error(
-            "Unexpected error during file upload",
-            file={"name": file.filename},
-            error={
-                "type": type(e).__name__,
-                "message": str(e),
-            },
+            "file_upload_error",
+            filename=file.filename,
+            error=str(e),
             exc_info=True
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing file: {str(e)}"
         )
-
 
 @app.get("/api/invoices", response_model=List[InvoiceResponse])
 async def get_all_invoices():
@@ -1031,89 +958,28 @@ async def view_invoices():
 
 @app.on_event("startup")
 async def startup_event():
-    """
-    Application startup event.
-    Verify all dependencies are available.
-    """
-    
-    app_logger.info("=" * 70)
-    app_logger.info("🚀 Invoice Processing System Starting")
-    app_logger.info("=" * 70)
-    app_logger.info(
-        "System initialization",
-        system={
-            "version": settings.API_VERSION,
-            "debug": settings.DEBUG,
-            "log_level": settings.LOG_LEVEL,
-        }
-    )
-    
+    """Application startup event"""
+
+    app_logger.info("startup_started")
+
     # Check Ollama
     try:
         response = requests.get(settings.OLLAMA_HOST + "/api/tags", timeout=5)
-        app_logger.info(
-            "✅ Ollama connected",
-            service={"name": "ollama", "status": "running", "url": settings.OLLAMA_HOST}
-        )
+        app_logger.info("ollama_available")
     except Exception as e:
-        app_logger.warning(
-            "⚠️  Ollama not available",
-            service={"name": "ollama", "status": "offline", "url": settings.OLLAMA_HOST},
-            error=str(e)
-        )
-    
+        app_logger.warning("ollama_unavailable", error=str(e))
+
     # Check Database
     try:
         with psycopg2.connect(**settings.database_url) as conn:
-            app_logger.info(
-                "✅ PostgreSQL connected",
-                service={
-                    "name": "database",
-                    "status": "running",
-                    "host": settings.DATABASE_HOST,
-                    "port": settings.DATABASE_PORT,
-                }
-            )
+            app_logger.info("database_connected")
     except Exception as e:
-        app_logger.error(
-            "❌ PostgreSQL connection failed",
-            service={
-                "name": "database",
-                "status": "offline",
-                "host": settings.DATABASE_HOST,
-            },
-            error=str(e)
-        )
-    
-    # Check Loki
-    if settings.LOKI_ENABLED:
-        try:
-            response = requests.get(settings.LOKI_URL + "/ready", timeout=5)
-            app_logger.info(
-                "✅ Loki connected",
-                service={"name": "loki", "status": "running", "url": settings.LOKI_URL}
-            )
-        except Exception as e:
-            app_logger.warning(
-                "⚠️  Loki not available",
-                service={"name": "loki", "status": "offline", "url": settings.LOKI_URL},
-                error=str(e)
-            )
-    
-    app_logger.info(
-        "System ready",
-        system={
-            "api_url": f"http://{settings.HOST}:{settings.PORT}",
-            "docs_url": f"http://{settings.HOST}:{settings.PORT}/docs",
-        }
-    )
-    app_logger.info("=" * 70)
+        app_logger.error("database_connection_failed", error=str(e))
 
+    app_logger.info("startup_complete", host=settings.HOST, port=settings.PORT)
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Application shutdown event"""
-    
-    app_logger.info("=" * 70)
-    app_logger.info("🛑 Invoice Processing System Shutting Down")
-    app_logger.info("=" * 70)
+
+    app_logger.info("shutdown_started")
