@@ -15,6 +15,10 @@ A production-grade invoice extraction system using local Llama 3.2 (via Ollama) 
 - ✅ **Confidence Scoring** - Know how confident Llama was in extraction
 - ✅ **Line Item Support** - Extract individual line items from invoices
 - ✅ **Zero External API Costs** - Everything runs locally
+- ✅ **Dockerized** - Full stack runs with Docker Compose
+- ✅ **Structured Logging** - ECS-style JSON logs via structlog
+- ✅ **Centralized Log Viewing** - Loki + Promtail + Grafana stack
+- ✅ **Environment-Based Config** - All secrets in `.env`, nothing hardcoded
 
 ---
 
@@ -41,71 +45,72 @@ A production-grade invoice extraction system using local Llama 3.2 (via Ollama) 
 - **JavaScript** - Dynamic interactions
 - **Fetch API** - Asynchronous requests
 
+### DevOps & Observability
+- **Docker Compose** - Container orchestration (app + postgres, logging stack)
+- **structlog** - Structured JSON logging
+- **Loki** - Log aggregation
+- **Promtail** - Ships container logs to Loki via Docker socket
+- **Grafana** - Log exploration and dashboards
+
 ---
 
 ## Prerequisites
 
 Before starting, ensure you have:
 
-1. **Python 3.11+**
-   ```bash
-   python --version
-   ```
+1. **Docker Desktop** - Download from [docker.com](https://www.docker.com/products/docker-desktop/) (recommended path — runs app, PostgreSQL, and logging stack)
 
-2. **Ollama Installed** - Download from [ollama.ai](https://ollama.ai)
+2. **Ollama Installed** - Download from [ollama.ai](https://ollama.ai) (runs on host, not in Docker)
    ```bash
    ollama pull llama3.2
    ollama serve
    ```
 
-3. **PostgreSQL 15+** - Download from [postgresql.org](https://www.postgresql.org/download/)
-   - Installation guide for your OS
+3. **Python 3.11+** - Only needed for running the app outside Docker
+   ```bash
+   python --version
+   ```
 
 4. **Git** - For version control (optional)
 
 ---
 
-## Installation
+## Installation (Docker — Recommended)
 
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/invoice-processing-system.git
+git clone https://github.com/was-abi/invoice-processing-system.git
 cd invoice-processing-system
 ```
 
-### Step 2: Create Virtual Environment
+### Step 2: Configure Environment
 
 ```bash
-python -m venv venv
-
-# On Mac/Linux:
-source venv/bin/activate
-
-# On Windows:
-venv\Scripts\activate
+# Copy the template and fill in real values
+cp .env.example .env
 ```
 
-### Step 3: Install Dependencies
+Edit `.env` — at minimum set `DATABASE_PASSWORD`. All configuration (database credentials, Ollama host, Grafana admin login) lives here. Nothing is hardcoded in the compose files or code.
+
+### Step 3: Start Ollama (on host)
 
 ```bash
-pip install -r requirements.txt
+ollama serve
 ```
 
-**If requirements.txt doesn't exist, install manually:**
+### Step 4: Start App + Database
 
 ```bash
-pip install fastapi uvicorn python-multipart psycopg2-binary pydantic requests
+docker-compose up -d --build
 ```
 
-### Step 4: Setup Database
+Starts `invoice_app` (FastAPI, port 8000) and `invoice_postgres` (PostgreSQL 18).
+
+### Step 5: Create Database Tables (first run only)
 
 ```bash
-# Create database
-createdb invoice_db
-
-# Create tables
-python init_db.py
+docker exec invoice_app python init_db.py
 ```
 
 Expected output:
@@ -118,50 +123,37 @@ Expected output:
 ✅ All tables created successfully!
 ```
 
-### Step 5: Configure Database Connection
-
-Edit `app.py` and update the password:
-
-```python
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "invoice_db",
-    "user": "postgres",
-    "password": "YOUR_PASSWORD_HERE",  # ← Change this
-    "port": "5432"
-}
-```
-
----
-
-## Running the Application
-
-### Terminal 1: Start Ollama
+### Step 6: Start Logging Stack (optional)
 
 ```bash
-ollama serve
+docker-compose -f docker-compose-logging.yml up -d
 ```
 
-You should see:
-```
-Listening on 127.0.0.1:11434
-```
-
-### Terminal 2: Start FastAPI Server
-
-```bash
-uvicorn app:app --reload
-```
-
-You should see:
-```
-INFO:     Uvicorn running on http://127.0.0.1:8000
-INFO:     Application startup complete
-```
+Starts Loki (port 3100), Promtail, and Grafana (port 3000).
 
 ### Open in Browser
 
-Visit: **http://localhost:8000**
+- App: **http://localhost:8000**
+- Health check: **http://localhost:8000/health**
+- Grafana: **http://localhost:3000** (credentials from `.env`)
+
+---
+
+## Running Without Docker (Local Python)
+
+```bash
+python -m venv venv
+venv\Scripts\activate        # Windows
+source venv/bin/activate     # Mac/Linux
+
+pip install -r requirements.txt
+
+# Requires local PostgreSQL; set DATABASE_HOST=localhost in .env
+createdb invoice_db
+python init_db.py
+
+uvicorn app:app --reload
+```
 
 ---
 
@@ -379,6 +371,43 @@ Payment Terms: Net 45
 
 ---
 
+## Logging & Observability
+
+### How Logs Flow
+
+```
+FastAPI app (structlog JSON) → container stdout → Promtail (Docker socket) → Loki → Grafana
+```
+
+- **App logs**: `logger.py` configures structlog with named loggers (`app`, `extraction`, `database`, `http`). Every log is a JSON event, e.g. `http_request_completed` with `status_code` and `duration_ms`.
+- **HTTP middleware** in `app.py` logs every request/response with timing.
+- **Promtail** discovers all running containers via the Docker socket and ships their logs to Loki, labeled by container name.
+
+### Viewing Logs in Grafana
+
+1. Open http://localhost:3000, log in (credentials from `.env`)
+2. Left sidebar → **Explore** (compass icon)
+3. Select **Loki** datasource (auto-provisioned from `grafana-provisioning/`)
+4. Query examples:
+
+```logql
+{container="invoice_app"}                            # all app logs
+{container="invoice_postgres"}                       # database logs
+{container=~"invoice.*"}                             # everything
+{container="invoice_app"} |= "error"                 # app errors only
+```
+
+### Config Files
+
+| File | Purpose |
+|------|---------|
+| `loki-config.yml` | Loki storage/schema (boltdb-shipper, v11 schema) |
+| `promtail-config.yml` | Docker service discovery + Loki push URL |
+| `grafana-provisioning/datasources/loki.yml` | Auto-configures Loki datasource in Grafana |
+| `logger.py` | structlog setup for the app |
+
+---
+
 ## Database Schema
 
 ### invoices Table
@@ -425,20 +454,27 @@ Payment Terms: Net 45
 
 ```
 invoice-processing-system/
-├── app.py                      # FastAPI application
-├── models.py                   # Pydantic data models
-├── extract_invoice.py          # CLI extraction script
-├── query_invoices.py           # CLI query script
-├── init_db.py                  # Database initialization
-├── sample_invoice.txt          # Sample invoice 1
-├── sample_invoice_2.txt        # Sample invoice 2
-├── sample_invoice_3.txt        # Sample invoice 3
-├── sample_invoice_4.txt        # Sample invoice 4
-├── sample_invoice_5.txt        # Sample invoice 5
-├── requirements.txt            # Python dependencies
-├── .gitignore                  # Git ignore file
-├── README.md                   # This file
-└── venv/                       # Virtual environment (not in git)
+├── app.py                          # FastAPI application (routes, middleware, helpers)
+├── config.py                       # Settings loaded from environment / .env
+├── logger.py                       # structlog structured logging setup
+├── models.py                       # Pydantic data models
+├── init_db.py                      # Database table creation (uses config.py)
+├── extract_invoice.py              # CLI extraction script
+├── query_invoices.py               # CLI query script
+├── Dockerfile                      # App container image
+├── docker-compose.yml              # App + PostgreSQL
+├── docker-compose-logging.yml      # Loki + Promtail + Grafana
+├── loki-config.yml                 # Loki configuration
+├── promtail-config.yml             # Promtail log shipping configuration
+├── grafana-provisioning/           # Auto-provisioned Grafana datasources
+│   └── datasources/loki.yml
+├── sample_invoice*.txt             # Sample invoices for testing
+├── requirements.txt                # Python dependencies
+├── .env.example                    # Template for required env vars (committed)
+├── .env                            # Real values (gitignored, never committed)
+├── .gitignore
+├── README.md
+└── logs/                           # App log files (gitignored)
 ```
 
 ---
@@ -451,6 +487,12 @@ Main FastAPI application with:
 - API endpoints (file upload, data retrieval)
 - Helper functions for extraction and database operations
 - Startup checks for Ollama and PostgreSQL
+
+### config.py
+Central settings class — reads all configuration from environment variables (loaded from `.env` via python-dotenv). Used by `app.py` and `init_db.py`.
+
+### logger.py
+structlog configuration producing JSON logs with named loggers: `app_logger`, `extraction_logger`, `db_logger`, `http_logger`. Log calls use event names as first argument (e.g. `app_logger.info("health_check_requested")`), never as an `event=` keyword.
 
 ### models.py
 Pydantic data models using Context7 best practices:
@@ -496,15 +538,35 @@ curl http://localhost:11434/api/tags
 
 ### PostgreSQL Connection Error
 
-**Error:** "psql is not recognized" or "Database connection failed"
+**Error:** "Database connection failed" or `"database": "❌ unavailable"` in /health
 
 **Solution:**
-1. Verify PostgreSQL is installed
-2. Check password in `app.py` matches your PostgreSQL password
+1. Check containers are running: `docker ps`
+2. Check `DATABASE_PASSWORD` in `.env` matches what postgres was initialized with
 3. Verify database exists:
    ```bash
-   psql -U postgres -l | grep invoice_db
+   docker exec invoice_postgres psql -U postgres -l
    ```
+
+### Tables Missing
+
+**Error:** `relation "invoices" does not exist`
+
+**Reason:** Fresh postgres volume has no tables.
+
+**Solution:**
+```bash
+docker exec invoice_app python init_db.py
+```
+
+### No Logs in Grafana
+
+**Error:** Explore query returns "No logs found"
+
+**Solution:**
+1. Check Promtail is running: `docker ps | grep promtail`
+2. Verify Loki is ready: `curl http://localhost:3100/ready`
+3. Generate traffic (hit http://localhost:8000/health), wait a few seconds, re-run query
 
 ### Extraction Timeout
 
@@ -666,6 +728,10 @@ For issues and questions:
 - ✅ Week 2: PostgreSQL database integration
 - ✅ Week 3: FastAPI web interface
 - ✅ Week 4: Production-ready code
+  - Dockerized app + PostgreSQL (docker-compose)
+  - Structured JSON logging with structlog
+  - Loki + Promtail + Grafana logging stack
+  - Environment-based configuration (`.env` / `.env.example`), no hardcoded secrets
 
 ---
 
