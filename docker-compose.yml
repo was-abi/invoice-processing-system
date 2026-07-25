@@ -1,14 +1,12 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
     image: postgres:18-alpine
     container_name: invoice_postgres
     environment:
-      POSTGRES_DB: invoice_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: your_password_here
+      POSTGRES_DB: ${DATABASE_NAME:-invoice_db}
+      POSTGRES_USER: ${DATABASE_USER:-postgres}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
@@ -29,9 +27,9 @@ services:
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
-      DATABASE_NAME: invoice_db
-      DATABASE_USER: postgres
-      DATABASE_PASSWORD: your_password_here
+      DATABASE_NAME: ${DATABASE_NAME:-invoice_db}
+      DATABASE_USER: ${DATABASE_USER:-postgres}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
       OLLAMA_HOST: http://host.docker.internal:11434
       LOG_LEVEL: INFO
     ports:
